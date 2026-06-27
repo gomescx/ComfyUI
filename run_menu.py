@@ -29,6 +29,14 @@ VIDEO_OUT  = "/Users/claudiogomes/Downloads/Lana_faceswap.mp4"
 HAIR_MODELS_GB     = 31   # flux-fill-dev (fp16) + CLIP + VAE + Redux
 HAIR_MINIMUM_GB    = 38   # models + working tensors + OS buffer
 
+GGUF_Q6_GB         = 10   # flux1-fill-dev-Q6_K.gguf model RAM
+GGUF_Q8_GB         = 13   # flux1-fill-dev-Q8_0.gguf model RAM
+GGUF_OVERHEAD_GB   = 7    # CLIP + VAE + Redux + working tensors + OS buffer
+
+MODELS_DIR = Path(__file__).parent / "models" / "unet"
+GGUF_Q6_FILE = "flux1-fill-dev-Q6_K.gguf"
+GGUF_Q8_FILE = "flux1-fill-dev-Q8_0.gguf"
+
 
 # ── Helpers ───────────────────────────────────────────────
 def hr():
@@ -93,7 +101,13 @@ def main():
         except ValueError:
             print(f"  {RD}Enter a number, e.g.  30{R}")
 
-    hair_ok = mem_gb >= HAIR_MINIMUM_GB
+    hair_ok  = mem_gb >= HAIR_MINIMUM_GB
+    q6_exists = (MODELS_DIR / GGUF_Q6_FILE).exists()
+    q8_exists = (MODELS_DIR / GGUF_Q8_FILE).exists()
+    q6_min_gb = GGUF_Q6_GB + GGUF_OVERHEAD_GB   # ~17 GB
+    q8_min_gb = GGUF_Q8_GB + GGUF_OVERHEAD_GB   # ~20 GB
+    q6_ok     = q6_exists and mem_gb >= q6_min_gb
+    q8_ok     = q8_exists and mem_gb >= q8_min_gb
 
     # 4 ── Mode selection
     print()
@@ -109,26 +123,44 @@ def main():
             return f"{G}available{R}"
         return f"{RD}need {min_gb - mem_gb:.0f} GB more{R}"
 
+    def gguf_status(exists, min_gb, filename):
+        if not exists:
+            return f"{RD}not downloaded ({filename}){R}"
+        if mem_gb < min_gb:
+            return f"{RD}need {min_gb - mem_gb:.0f} GB more{R}"
+        return f"{G}available{R}"
+
     print(f"  [3]  Face swap + hair                    (~38 GB)   {hair_status(HAIR_MINIMUM_GB)}")
     print(f"  [4]  Face swap + hair + restore          (~38 GB)   {hair_status(HAIR_MINIMUM_GB)}")
-    print(f"  {D}[5]  Face swap + hair (fp8)               "
-          f"{RD}unsupported on Apple GPU — disabled{R}")
-    print(f"  {D}     fp8 is a CUDA-only dtype; MPS crashes on it. "
-          f"Use mode 3/4 (fp16) when ~38 GB is free.{R}")
+    print(f"  [5]  Face swap + hair GGUF Q6_K          (~17 GB)   {gguf_status(q6_exists, q6_min_gb, GGUF_Q6_FILE)}")
+    print(f"  [6]  Face swap + hair GGUF Q8_0          (~20 GB)   {gguf_status(q8_exists, q8_min_gb, GGUF_Q8_FILE)}")
+    print(f"  [7]  Face swap + hair GGUF Q6_K + restore (~17 GB)  {gguf_status(q6_exists, q6_min_gb, GGUF_Q6_FILE)}")
+    print(f"  [8]  Face swap + hair GGUF Q8_0 + restore (~20 GB)  {gguf_status(q8_exists, q8_min_gb, GGUF_Q8_FILE)}")
 
     valid_modes = ["1", "2"]
     if hair_ok:
         valid_modes += ["3", "4"]
+    if q6_ok:
+        valid_modes += ["5", "7"]
+    if q8_ok:
+        valid_modes += ["6", "8"]
 
     mode = ask("Mode", default="1", valid=valid_modes)
-    hair    = mode in ("3", "4")
-    restore = mode in ("2", "4")
+    hair    = mode in ("3", "4", "5", "6", "7", "8")
+    restore = mode in ("2", "4", "7", "8")
+    gguf    = "q6" if mode in ("5", "7") else "q8" if mode in ("6", "8") else None
 
     # 5 ── Queue depth
     print()
     hr()
     print()
-    if hair:
+    if hair and gguf == "q6":
+        headroom  = max(0, mem_gb - GGUF_Q6_GB - GGUF_OVERHEAD_GB)
+        rec_queue = max(1, min(8, int(headroom / 3)))
+    elif hair and gguf == "q8":
+        headroom  = max(0, mem_gb - GGUF_Q8_GB - GGUF_OVERHEAD_GB)
+        rec_queue = max(1, min(8, int(headroom / 3)))
+    elif hair:
         headroom  = max(0, mem_gb - HAIR_MODELS_GB - 7)
         rec_queue = max(1, min(8, int(headroom / 3)))
     else:
@@ -149,13 +181,19 @@ def main():
     mode_label = {
         "1": "Face swap only",
         "2": "Face swap + CodeFormer restore",
-        "3": "Face swap + hair transfer",
-        "4": "Face swap + hair + restore",
+        "3": "Face swap + hair transfer (fp16)",
+        "4": "Face swap + hair + restore (fp16)",
+        "5": "Face swap + hair GGUF Q6_K",
+        "6": "Face swap + hair GGUF Q8_0",
+        "7": "Face swap + hair GGUF Q6_K + restore",
+        "8": "Face swap + hair GGUF Q8_0 + restore",
     }[mode]
 
     print(f"  {B}Ready to run{R}")
     print()
     print(f"  Mode    : {C}{mode_label}{R}")
+    if gguf:
+        print(f"  GGUF    : {gguf.upper()}")
     print(f"  Queue   : {queue}")
     print(f"  Input   : {D}{VIDEO_IN}{R}")
     print(f"  Output  : {D}{VIDEO_OUT}{R}")
@@ -177,6 +215,8 @@ def main():
         cmd.append("--hair")
     if restore:
         cmd.append("--restore")
+    if gguf:
+        cmd += ["--gguf", gguf]
 
     print(f"  {D}$ {' '.join(cmd)}{R}")
     print()

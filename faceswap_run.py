@@ -10,6 +10,8 @@ Usage:
   uv run --python /Users/claudiogomes/Desktop/Github/ComfyUI/.venv/bin/python faceswap_run.py
   uv run --python /Users/claudiogomes/Desktop/Github/ComfyUI/.venv/bin/python faceswap_run.py --hair
   uv run --python /Users/claudiogomes/Desktop/Github/ComfyUI/.venv/bin/python faceswap_run.py --hair --restore
+  uv run --python /Users/claudiogomes/Desktop/Github/ComfyUI/.venv/bin/python faceswap_run.py --hair --gguf q6
+  uv run --python /Users/claudiogomes/Desktop/Github/ComfyUI/.venv/bin/python faceswap_run.py --hair --gguf q8
   uv run --python /Users/claudiogomes/Desktop/Github/ComfyUI/.venv/bin/python faceswap_run.py --queue 16
 
 --hair requires two models in models/ (see CLAUDE.md for download links):
@@ -40,6 +42,11 @@ COMFY_MODELS  = "/Users/claudiogomes/Desktop/Github/ComfyUI/models"
 HAIR_MODELS = {
     "style_models/flux1-redux-dev.safetensors": "123 MB",
     "clip_vision/sigclip_vision_patch14_384.safetensors": "817 MB",
+}
+
+GGUF_MODELS = {
+    "q6": "flux1-fill-dev-Q6_K.gguf",
+    "q8": "flux1-fill-dev-Q8_0.gguf",
 }
 
 # --- Abort handling ---
@@ -272,6 +279,7 @@ def make_hair_workflow(
     mask_filename: str,
     restore: bool,
     seed: int,
+    gguf: str | None = None,
 ) -> dict:
     """
     Face-swap (ReActor) then hairstyle inpainting (Flux Redux + Fill Dev).
@@ -330,9 +338,15 @@ def make_hair_workflow(
         # weight_dtype is always "default" (bf16/fp16). fp8_e4m3fn is NOT
         # supported by Apple's MPS backend — it loads but crashes the moment
         # the KSampler runs a forward pass. fp8 is a CUDA-only feature.
-        "5": {"class_type": "UNETLoader",
-              "inputs": {"unet_name": "flux1-fill-dev.safetensors",
-                         "weight_dtype": "default"}},
+        # --gguf q6/q8 uses UnetLoaderGGUF instead (no weight_dtype input).
+        "5": (
+            {"class_type": "UnetLoaderGGUF",
+             "inputs": {"unet_name": GGUF_MODELS[gguf]}}
+            if gguf else
+            {"class_type": "UNETLoader",
+             "inputs": {"unet_name": "flux1-fill-dev.safetensors",
+                        "weight_dtype": "default"}}
+        ),
         "6": {"class_type": "VAELoader",
               "inputs": {"vae_name": "ae.safetensors"}},
         "7": {"class_type": "DualCLIPLoader",
@@ -411,10 +425,11 @@ def submit(
     restore: bool,
     mask_filename: str | None = None,
     seed: int = 42,
+    gguf: str | None = None,
 ) -> tuple[str, str]:
     if mask_filename:
         workflow = make_hair_workflow(frame_filename, face_filename,
-                                     mask_filename, restore, seed)
+                                     mask_filename, restore, seed, gguf)
         save_node = "19"
     else:
         workflow = make_workflow(frame_filename, face_filename, restore)
@@ -489,16 +504,23 @@ def main():
                         help="Enable CodeFormer face restoration (slower)")
     parser.add_argument("--hair", action="store_true",
                         help="Transfer hairstyle from source photo via Flux Redux/Fill")
+    parser.add_argument("--gguf", choices=["q6", "q8"], default=None,
+                        help="Use GGUF-quantized UNET instead of fp16 (requires --hair). "
+                             "q6 ~9.9 GB, q8 ~12.7 GB (vs fp16 ~22 GB)")
     parser.add_argument("--queue", type=int, default=8,
                         help="Pipeline depth: frames submitted ahead (default 8)")
     args = parser.parse_args()
+
+    if args.gguf and not args.hair:
+        print("[!] --gguf has no effect without --hair; ignoring.")
+        args.gguf = None
 
     if args.hair:
         check_hair_models()
 
     print("=" * 60)
     print("Face Swap Runner (pipelined, memory-safe)")
-    print(f"  restore={args.restore}  hair={args.hair}  queue_depth={args.queue}")
+    print(f"  restore={args.restore}  hair={args.hair}  gguf={args.gguf}  queue_depth={args.queue}")
     print("  Ctrl+C to abort cleanly")
     print("=" * 60)
 
@@ -557,7 +579,7 @@ def main():
 
             pid, save_node = submit(
                 frame_path.name, face_filename, args.restore,
-                mask_filename=mask_filename, seed=42,
+                mask_filename=mask_filename, seed=42, gguf=args.gguf,
             )
             in_flight.append((pid, frame_path.name, save_node))
             submit_idx += 1
