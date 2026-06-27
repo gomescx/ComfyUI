@@ -1,0 +1,62 @@
+{
+  "1": {
+    "inputs": {
+      "file": "Lana.mp4"
+    },
+    "class_type": "LoadVideo",
+    "_meta": { "title": "Load Video" }
+  },
+  "2": {
+    "inputs": {
+      "video": ["1", 0]
+    },
+    "class_type": "GetVideoComponents",
+    "_meta": { "title": "Extract Frames + Audio + FPS" }
+  },
+  "3": {
+    "inputs": {
+      "image": "Kate_2013.png",
+      "upload": "image"
+    },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Load Source Face" }
+  },
+  "4": {
+    "inputs": {
+      "enabled": true,
+      "input_image": ["2", 0],
+      "source_image": ["3", 0],
+      "swap_model": "inswapper_128.onnx",
+      "facedetection": "retinaface_resnet50",
+      "face_restore_model": "codeformer.pth",
+      "face_restore_visibility": 1.0,
+      "codeformer_weight": 0.5,
+      "detect_gender_input": "no",
+      "detect_gender_source": "no",
+      "input_faces_index": "0",
+      "source_faces_index": "0",
+      "console_log_level": 1
+    },
+    "class_type": "ReActorFaceSwap",
+    "_meta": { "title": "Face Swap" }
+  },
+  "5": {
+    "inputs": {
+      "images": ["4", 0],
+      "fps": ["2", 2],
+      "audio": ["2", 1]
+    },
+    "class_type": "CreateVideo",
+    "_meta": { "title": "Reassemble Video" }
+  },
+  "6": {
+    "inputs": {
+      "video": ["5", 0],
+      "filename_prefix": "video/faceswap_output",
+      "format": "mp4",
+      "codec": "h264"
+    },
+    "class_type": "SaveVideo",
+    "_meta": { "title": "Save Video" }
+  }
+}
